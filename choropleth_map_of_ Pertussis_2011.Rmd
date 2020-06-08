@@ -1,0 +1,412 @@
+---
+title: "Choropleth Map of Pertussis incidents in 2011 of Victorian Local Government Arae(LGA)"
+output: html_notebook
+---
+We will introduce spatial data visualisation tools using the `lga_profiles_data_2011_pt1` dataset. We will first produce a choropleth map of Victoria showing the spatial distribution of pertussis incidents, `notifications_per_1_000_people_of_pertussis` by LGA. Pertussis, more commonly known as whooping cough, is a highly contagious and deadly respiratory infection that affects newborns. The bacterial infection has made a comeback in recent years due to low national immunization rates. The consequences have been deadly. Understanding the spatial distribution of this serious infection can help inform health policy and intervention in an effort to control this preventable infection.
+
+**Datasets**
+1. `lga_profiles_data_2011_pt1` <br>
+2. `notifications_per_1_000_people_of_pertussis`
+
+**Exploratory Data Analysis and Visualization**
+
+```{r}
+#install.packages("rgeos") # If required
+#install.packages("maptools") # If required
+#install.packages("ggmap") # If required
+#install.packages("broom") # If required
+#install.packages("sf")
+#install.packages("rgdal")
+library(ggplot2)
+library(dplyr)
+library(rgeos)
+library(maptools)
+library(ggmap)
+library(broom)
+library(sf)
+library(rgdal)
+```
+
+Next we import the shape file. To do this correctly you need to import the shape file from a folder with all the contents from `vmlite_lga_cm.zip`.
+
+```{r}
+vic.lga.shp <- readOGR("data/vmlite_lga_cm.shp")
+```
+```{r}
+# Check
+class(vic.lga.shp)
+```
+```{r}
+# check columns name
+names(vic.lga.shp)
+```
+```{r}
+# verify lga_name column
+head(vic.lga.shp$lga_name)
+```
+The code verifies 87 `lga_names` which is higher than the expected 79. This is because the shp file also includes some islands, resort regions and repeated LGA names.
+
+Now we need to bring in the LGA variables that we would like to map from the `lga_profiles_data_2011_pt1.csv` dataset. We also want to view the `lga_name` variable as these will be used as our unique IDs to merge the shp file and the dataset.
+
+```{r}
+lga_profiles_data_2011_pt1 <- read.csv("data/lga_profiles_data_2011_pt1.csv")
+head(lga_profiles_data_2011_pt1$lga_name)
+```
+
+In order to merge the shp file with the profile data, we need to have matching IDs in both variables.
+```{r}
+lga.shp.f <- tidy(vic.lga.shp, region='lga_name')
+head(lga.shp.f)
+```
+
+
+
+```{r}
+# Note how the LGA names are now called id. We need to fix this so that both data frames have an lga_name variable to use in the merge.
+lga.shp.f$lga_name <- lga.shp.f$id
+head(lga.shp.f)
+```
+
+And one, final and very, very important step. We must order the final data frame to be used in the choropleth mapping by `merge.lga.profiles$order`. 
+This will ensure polygons are drawn correctly in ggplot object.
+
+```{r}
+merge.lga.profiles <- merge(lga.shp.f, lga_profiles_data_2011_pt1,
+                            by="lga_name", all.X=TRUE)
+```
+
+And one, final and very, very important step. We must order the final data frame to be used in the choropleth mapping by merge.lga.profiles$order. This will ensure the polygons are drawn correctly in the `ggplot` object.
+
+```{r}
+choro.data.frame <- merge.lga.profiles[order(merge.lga.profiles$order), ]
+
+```
+
+```{r}
+#install.packages("mapproj")
+library(mapproj)
+```
+
+Now we can start with our first plot.
+
+```{r}
+p1 <- ggplot(data = choro.data.frame,
+             aes( x=long, y= lat, group=group,
+                 fill = notifications_per_1_000_people_of_pertussis))
+
+p1 + geom_polygon(color = "black", size = 0.25) + coord_map() 
+```
+```{r}
+# We can make it prettier
+p1 + geom_polygon(color="black", size=0.25)+ 
+  coord_map()+ 
+  scale_fill_distiller(name="Cases \n per 1,000",
+                           guide = "legend",
+                           palette = "YlOrRd",
+                           direction = 1) + 
+  theme_minimal() + 
+  theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.x = element_blank(),
+            axis.text.y = element_blank(),
+            panel.grid = element_blank()) + 
+  labs(title = "VIctorian LGA Pertussis Cases - 2011")
+```
+
+Not bad. It’s a static plot, so we are unable to zoom into Melbourne metro where the majority of Victoria’s population is concentrated. It’s also difficult to see some of the smaller LGA’s and near impossible to see Queenscliff. We could also add some hover information to report the LGA name and exact rate of pertussis cases per 1000 people. We will do this in the following section by introducing Leaflet.
+
+```{r}
+#install.packages("leaflet")
+library(leaflet)
+```
+
+For Leaflet choropleth maps, we need to use a SpatialPolygonDataFrame.
+
+```{r}
+# Check
+class(vic.lga.shp)
+```
+
+We can plot the LGA polygons quickly using the leaflet function and addPolyons. We need to set a default view and zoom level. 
+
+```{r}
+p2 <- leaflet(vic.lga.shp) %>% 
+  setView(lng = 145.5, lat = -36.5, zoom = 5)
+p2 %>% addPolygons()
+
+```
+
+The next step will be to merge the LGA profile data, lga_profiles_data_2011_pt1 with the vic.lga.shp spatial polygon data frame.
+We use the merge functions from the sp package again. When merging the .shp file directly with the LGA data frame we will encounter errors with duplicated LGAs. To overcome this issue, we can add an argument to duplicate the matches. This won’t impact the choropleth map. Ideally, you would remove the duplicates to ensure a clean merge.
+
+```{r}
+merge.lga.profiles3<-sp::merge(vic.lga.shp, lga_profiles_data_2011_pt1, 
+                          by="lga_name", duplicateGeoms = TRUE)
+```
+
+Now we can create a discrete colour scale. There are numerous methods but a simple approach is to base the scale on the quantiles of pertussis notifications. We can use the quantile() and colourBin() function from the leaflet package for this purpose. First, we calculate the quantiles for 5 levels.
+
+```{r}
+bins <- quantile(
+  lga_profiles_data_2011_pt1$notifications_per_1_000_people_of_pertussis,
+  probs = seq(0,1,.2), names = FALSE, na.rm = TRUE)
+bins
+```
+
+bins now contains five sequential colour levels so that 20% of the data falls within each bin The following histogram visualises the breaks used to create the scale. Note how each bin does not have an equal interval.
+
+```{r}
+ggplot(data = lga_profiles_data_2011_pt1, 
+       aes(x = notifications_per_1_000_people_of_pertussis)) +
+  geom_histogram(colour = "white", bins = 40) + 
+  geom_vline(
+    xintercept = quantile(
+      lga_profiles_data_2011_pt1$notifications_per_1_000_people_of_pertussis,
+      probs = seq(0,1,0.2), na.rm = TRUE), 
+    colour = "red", lwd = 1, lty = 2)
+```
+
+bins can be used to create a colour scale, named pal, using the colorBin() function, which maps the bins to a palette. We have selected the YlOrRd palette from the ColourBrewer package.
+
+```{r}
+pal <- colorBin(
+  "YlOrRd",
+  domain = lga_profiles_data_2011_pt1$notifications_per_1_000_people_of_pertussis, 
+  bins = bins
+  )
+```
+
+Now we can add the colour scale named pal to the choropleth map. Note how we had to change the dataset to the merged dataset, merge.lga.profiles3.
+
+```{r}
+p3 <- leaflet(merge.lga.profiles3) %>% 
+  setView(lng = 147, lat = -36.5, zoom = 6)
+p3 %>% addPolygons(
+  fillColor = ~pal(notifications_per_1_000_people_of_pertussis),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7)
+```
+
+We can also add highlighting…
+
+```{r}
+p3 %>% addPolygons(
+  fillColor = ~pal(notifications_per_1_000_people_of_pertussis),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 3,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE))
+```
+
+When we hover over an LGA, we should also be able to see the name and pertussis rate.
+
+```{r}
+labels <- sprintf(
+  "<strong>%s</strong><br/>%g notifications / 1,000 people",
+  merge.lga.profiles3$lga_name, 
+  merge.lga.profiles3$notifications_per_1_000_people_of_pertussis
+) %>% lapply(htmltools::HTML)
+
+p3 %>% addPolygons(
+  fillColor = ~pal(notifications_per_1_000_people_of_pertussis),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE),
+  label = labels,
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"))
+```
+
+Finally, we need a title and legend.
+
+```{r}
+labels <- sprintf(
+  "<strong>%s</strong><br/>%g notifications / 1,000 people",
+  merge.lga.profiles3$lga_name, 
+  merge.lga.profiles3$notifications_per_1_000_people_of_pertussis
+) %>% lapply(htmltools::HTML)
+
+library(htmlwidgets)
+library(htmltools)
+
+title <- tags$div(
+   HTML('<h3>Victorian LGA Pertussis Cases - 2011</h3>')
+ )
+
+p3 %>% addPolygons(
+  fillColor = ~pal(notifications_per_1_000_people_of_pertussis),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE),
+  label = labels,
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto")) %>% 
+  addLegend(pal = pal, 
+            values = ~notifications_per_1_000_people_of_pertussis, 
+            opacity = 0.7, title = "Notifications /1,000 people",
+  position = "bottomright") %>% 
+  addControl(title, position = "topright")
+```
+
+*Color Scales*
+Changing the colour scale on a choropleth map can have a drastic effect on its appearance. In the following section we will experiment with two other scales - equal intervals and continuous.
+
+*Equal intervals* use a variable’s minimum and maximum value to define cut points along a variable’s scale that have the same interval. This is the same approach used by a histogram. We use the colourBin() function from the Leaflet package to define the cut points. In this situation, we set bins = 4. You won’t necessarily get 4 bins because Leaflet will try to find a “pretty” number of intervals, which appears to minimise decimal rounding. If you want to force the exact number of bins, insert pretty = FALSE.
+
+```{r}
+pal2 <- colorBin(
+  "YlOrRd",
+  domain = lga_profiles_data_2011_pt1$notifications_per_1_000_people_of_pertussis,
+  bins = 4,
+  pretty = FALSE
+  )
+
+p3 %>% addPolygons(
+  fillColor = ~pal2(notifications_per_1_000_people_of_pertussis),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE),
+  label = labels,
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto")) %>%
+  addLegend(pal = pal2,
+            values = ~notifications_per_1_000_people_of_pertussis,
+            opacity = 0.7, title = "Notifications /1,000 people",
+            position = "bottomright") %>%
+  addControl(title, position = "topright")
+```
+
+This map is drastically different to the scale based on quantiles. Because pertussis notifications are skewed, the use of an equal interval scale hides the variability in the bulk of the distribution. However, it does do a good job of highlighting outliers, e.g. Corangamite and Central Goldfields.
+
+What about a continuous colour scale? We can try the *colorNumeric* function from Leaflet.
+
+```{r}
+pal3 <- colorNumeric(
+  "YlOrRd",
+  domain = lga_profiles_data_2011_pt1$notifications_per_1_000_people_of_pertussis
+  )
+
+p3 %>% addPolygons(
+  fillColor = ~pal3(notifications_per_1_000_people_of_pertussis),
+  weight = 2,
+  opacity = 1,
+  color = "white",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE),
+  label = labels,
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto")) %>%
+  addLegend(pal = pal3,
+            values = ~notifications_per_1_000_people_of_pertussis,
+            opacity = 0.7, title = "Notifications/1,000 people",
+            position = "bottomright") %>%
+  addControl(title, position = "topright")
+```
+
+A *continuous colour scale* is the best option. Due to the skewed nature of the variable, the continuous colour scale highlights the outliers, but provides enough sensitivity in the scale to discern the more subtle differences state-wide.
+
+##Simplify .shp Files
+When converting .shp to a data.frame, you can sometimes end up with some unusually large datasets. This depends on the .shp file being used. Sometimes their high level of precision (which is needed in mapping) creates a computational problem for spatial data visualisations. Connie Herrity, a former Data Visualisation student, had this very problem. After converting a .shp file to a data.frame she was left with 85.5 million rows. Suffice to say, the map took a prohibitively long time to render. This level of precision is often not needed for data visualisation, so it’s important to have a method to reduce the “resolution” of the .shp file. Connie helped me put together the following section to take you through the process.
+
+ We can use the `gSimplify()` function from the `rgeos` package.
+ 
+```{r}
+paste(nrow(lga.shp.f), "rows")
+```
+ 
+```{r}
+print(object.size(lga.shp.f), units="MB")
+```
+
+We can now test the effect of `gSimplify()`.
+
+```{r}
+vic.lga.shp.simp1 <- gSimplify(vic.lga.shp, tol = .01, topologyPreserve=TRUE)
+vic.lga.shp.simp1 <- SpatialPolygonsDataFrame(vic.lga.shp.simp1,
+                                              data=vic.lga.shp@data)
+lga.shp.f.simp1 <- tidy(vic.lga.shp.simp1, region = "lga_name")
+print(paste(nrow(lga.shp.f.simp1),"rows"))
+
+print(object.size(lga.shp.f.simp1), units = "MB")
+```
+
+The `tol` controls the degree of simplification. Increasing this value will increase the simplification. `tol = .01` makes a drastic decrease to the file size, so there is no need to increase this value. 
+
+Now, let’s re-plot using the simplified `.shp` file.
+
+```{r}
+lga.shp.f.simp1$lga_name <- lga.shp.f.simp1$id
+merge.lga.profiles2<-merge(lga.shp.f.simp1, lga_profiles_data_2011_pt1,
+                          by="lga_name", all.x=TRUE)
+choro.data.frame2<-merge.lga.profiles2[order(merge.lga.profiles2$order), ]
+p4 <- ggplot(data = choro.data.frame2,
+             aes(x = long, y = lat, group = group,
+                 fill = notifications_per_1_000_people_of_pertussis))
+p4 + geom_polygon(color = "black", size = 0.25) +
+  coord_map() +
+  scale_fill_distiller(name = "Cases \n per 1,000",
+                        guide = "legend",
+                    palette = "YlOrRd", direction = 1) +
+  theme_minimal() + theme(axis.title.x = element_blank(),
+                          axis.title.y = element_blank(),
+                          axis.text.x  = element_blank(),
+                          axis.text.y  = element_blank(),
+                          panel.grid  = element_blank()) +
+  labs(title="Victorian LGA Pertussis Cases - 2011")
+```
+
+Now, we would be hard-pressed to notice a difference. This function may save us a lot of trouble when dealing with precision *.shp* files or optimising a data visualisation app to run smoothly in the cloud.
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
